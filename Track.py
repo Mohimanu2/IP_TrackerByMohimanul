@@ -5,6 +5,7 @@ import time
 from flask import Flask, request, render_template_string
 from threading import Thread
 import subprocess
+import sys
 
 app = Flask(__name__)
 HTML_PAGE = """
@@ -55,22 +56,44 @@ def start_ngrok():
     token = input("Enter your Ngrok Authtoken: ").strip()
     os.system(f"./ngrok authtoken {token}")
     print("\n\033[93m[•] Starting Ngrok tunnel on port 5000...\033[0m")
-    subprocess.Popen(["./ngrok", "http", "5000"])
-    time.sleep(3)
+
+    # Start ngrok as a subprocess, non-blocking
+    ngrok_process = subprocess.Popen(["./ngrok", "http", "5000"], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    time.sleep(5)  # Wait for ngrok to initialize
+
     try:
-        url = requests.get("http://localhost:4040/api/tunnels").json()['tunnels'][0]['public_url']
-        print(f"\n\033[92m[✓] Share this link: {url}\033[0m\n")
-    except:
-        print("\033[91m[✗] Failed to get ngrok public URL.\033[0m")
+        tunnels = requests.get("http://localhost:4040/api/tunnels").json()['tunnels']
+        public_urls = [t['public_url'] for t in tunnels if t['proto'] == 'http']
+        if public_urls:
+            print(f"\n\033[92m[✓] Share this link: {public_urls[0]}\033[0m\n")
+            return ngrok_process
+        else:
+            print("\033[91m[✗] Ngrok tunnel not found.\033[0m")
+            ngrok_process.terminate()
+            return None
+    except Exception as e:
+        print(f"\033[91m[✗] Failed to get ngrok URL: {e}\033[0m")
+        ngrok_process.terminate()
+        return None
 
 def generate_link():
+    # Download ngrok if missing
     if not os.path.isfile("ngrok"):
         print("\033[93m[•] Downloading Ngrok...\033[0m")
-        os.system("wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm.zip")
-        os.system("unzip ngrok-stable-linux-arm.zip && rm ngrok-stable-linux-arm.zip")
+        os.system("wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm.zip -O ngrok.zip")
+        os.system("unzip ngrok.zip && rm ngrok.zip")
         os.system("chmod +x ngrok")
-    Thread(target=start_ngrok).start()
+
+    ngrok_process = start_ngrok()
+    if ngrok_process is None:
+        print("\033[91m[✗] Could not start ngrok tunnel. Exiting.\033[0m")
+        return
+
+    # Start Flask app in the main thread, accessible on all interfaces (0.0.0.0)
     app.run(host="0.0.0.0", port=5000)
+
+    # When app stops, kill ngrok
+    ngrok_process.terminate()
 
 def ip_lookup():
     ip = input("Enter target IP address: ").strip()
@@ -84,7 +107,7 @@ def menu():
     banner()
     while True:
         print("\n\033[93m[1]\033[0m Track location using IP")
-        print("\033[93m[2]\033[0m Generate link & capture visitor IP")
+        print("\033[93m[2]\033[0m Generate public link & capture visitor IP (ngrok)")
         print("\033[93m[0]\033[0m Exit")
         choice = input("Select an option: ").strip()
         if choice == '1':
@@ -93,7 +116,7 @@ def menu():
             generate_link()
         elif choice == '0':
             print("Exiting...")
-            break
+            sys.exit()
         else:
             print("Invalid option.")
 
