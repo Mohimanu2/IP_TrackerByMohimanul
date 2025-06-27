@@ -10,6 +10,7 @@ import json
 import shutil
 import platform
 import re
+import socket
 
 def ensure_pip():
     try:
@@ -83,6 +84,17 @@ def install_cloudflared():
 
 install_cloudflared()
 
+def find_free_port(preferred=5000):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(('', preferred))
+            return preferred
+        except OSError:
+            s.bind(('', 0))
+            return s.getsockname()[1]
+
+SERVER_PORT = find_free_port()
+
 BANNER = """
 =====================================
         Made by Mohimanul-TVM
@@ -154,7 +166,7 @@ def index():
     return html
 
 def run_flask_server():
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=SERVER_PORT)
 
 def get_or_ask_auth_token():
     token_file = "ngrok_token.txt"
@@ -179,12 +191,12 @@ def start_ngrok_tunnel():
         return None
     time.sleep(2)
     try:
-        tunnel = ngrok.connect(5000)
+        tunnel = ngrok.connect(SERVER_PORT)
         return tunnel
     except:
         return None
 
-def kill_process_on_port(port=5000):
+def kill_process_on_port(port):
     try:
         if platform.system() == "Windows":
             cmd_find = f'netstat -ano | findstr :{port}'
@@ -204,7 +216,7 @@ def kill_process_on_port(port=5000):
         pass
 
 def option_2_public_tracker():
-    kill_process_on_port(5000)
+    kill_process_on_port(SERVER_PORT)
     global ngrok_tunnel
     flask_thread = threading.Thread(target=run_flask_server, daemon=True)
     flask_thread.start()
@@ -239,7 +251,7 @@ def start_cloudflared_tunnel():
     global cloudflared_process
     try:
         cloudflared_process = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", "http://localhost:5000"],
+            ["cloudflared", "tunnel", "--url", f"http://localhost:{SERVER_PORT}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -250,15 +262,16 @@ def start_cloudflared_tunnel():
         return None
 
     public_url = None
-    pattern = re.compile(r"https?://[^\s]+trycloudflare.com")
+    pattern = re.compile(r"https?://(?!api\.)[^\s]+trycloudflare.com")
 
     for line in iter(cloudflared_process.stdout.readline, ""):
         line = line.strip()
         match = pattern.search(line)
         if match:
-            public_url = match.group(0)
-            break
-
+            candidate_url = match.group(0)
+            if "api.trycloudflare.com" not in candidate_url:
+                public_url = candidate_url
+                break
     if not public_url:
         try:
             cloudflared_process.terminate()
@@ -268,7 +281,7 @@ def start_cloudflared_tunnel():
     return public_url
 
 def option_3_cloudflare_tracker():
-    kill_process_on_port(5000)
+    kill_process_on_port(SERVER_PORT)
     flask_thread = threading.Thread(target=run_flask_server, daemon=True)
     flask_thread.start()
     install_cloudflared()
