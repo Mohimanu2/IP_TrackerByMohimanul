@@ -9,6 +9,7 @@ import time
 import json
 import shutil
 import platform
+import socket
 
 def ensure_pip():
     try:
@@ -158,16 +159,33 @@ def get_or_ask_auth_token():
     print("[+] Auth token saved to ngrok_token.txt for future runs.")
     return token
 
+def wait_for_flask_start(port=5000, timeout=10):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except (ConnectionRefusedError, socket.timeout):
+            time.sleep(0.2)
+    return False
+
 def start_ngrok_tunnel():
     ngrok.kill()
+    auth_token = get_or_ask_auth_token()
     try:
-        auth_token = get_or_ask_auth_token()
         ngrok.set_auth_token(auth_token)
     except Exception as e:
         print(f"[!] Error setting auth token: {e}")
         return None
+
+    print("[*] Waiting for Flask server to start on port 5000...")
+    if not wait_for_flask_start(5000):
+        print("[!] Flask did not start in time. Cannot open ngrok tunnel.")
+        return None
+
     try:
         tunnel = ngrok.connect(5000)
+        print("[+] ngrok tunnel started!")
         return tunnel
     except Exception as e:
         print(f"[!] Failed to start ngrok tunnel: {e}")
