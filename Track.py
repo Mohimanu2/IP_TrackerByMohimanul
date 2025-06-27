@@ -142,26 +142,45 @@ def index():
 def run_flask_server():
     app.run(host="0.0.0.0", port=5000)
 
+def get_or_ask_auth_token():
+    token_file = "ngrok_token.txt"
+    if os.path.exists(token_file):
+        with open(token_file, "r") as f:
+            token = f.read().strip()
+            if token:
+                return token
+    print("\n[!] No ngrok auth token found!")
+    print("You need a free ngrok account. Get your auth token here:")
+    print("   https://dashboard.ngrok.com/get-started/your-authtoken\n")
+    token = input("Paste your ngrok auth token here: ").strip()
+    with open(token_file, "w") as f:
+        f.write(token)
+    print("[+] Auth token saved to ngrok_token.txt for future runs.")
+    return token
+
 def start_ngrok_tunnel():
     ngrok.kill()
     try:
-        authtoken = os.getenv("NGROK_AUTHTOKEN")
-        if authtoken:
-            ngrok.set_auth_token(authtoken)
-    except Exception:
-        pass
-    tunnel = ngrok.connect(5000)
-    return tunnel
+        auth_token = get_or_ask_auth_token()
+        ngrok.set_auth_token(auth_token)
+    except Exception as e:
+        print(f"[!] Error setting auth token: {e}")
+        return None
+    try:
+        tunnel = ngrok.connect(5000)
+        return tunnel
+    except Exception as e:
+        print(f"[!] Failed to start ngrok tunnel: {e}")
+        return None
 
 def option_2_public_tracker():
     global ngrok_tunnel
     flask_thread = threading.Thread(target=run_flask_server, daemon=True)
     flask_thread.start()
     print("[*] Starting ngrok tunnel...")
-    try:
-        ngrok_tunnel = start_ngrok_tunnel()
-    except Exception as e:
-        print(f"[!] Failed to start ngrok tunnel: {e}")
+    ngrok_tunnel = start_ngrok_tunnel()
+    if not ngrok_tunnel:
+        print("[!] Exiting this option due to tunnel error.")
         return
     print(f"\n[+] Share this URL:\n\n    {ngrok_tunnel.public_url}\n")
     while True:
