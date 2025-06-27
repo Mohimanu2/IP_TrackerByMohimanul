@@ -9,24 +9,23 @@ import time
 import json
 import shutil
 import platform
-import socket
+import signal
+import re
 
 def ensure_pip():
     try:
         import pip
     except ImportError:
-        print("[*] pip not found. Attempting to install...")
         try:
             subprocess.check_call([sys.executable, "-m", "ensurepip"])
         except Exception:
-            print("[!] ensurepip not available. Trying get-pip.py...")
             os.system("wget https://bootstrap.pypa.io/get-pip.py -O get-pip.py")
             os.system(f"{sys.executable} get-pip.py")
             os.remove("get-pip.py")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
     except Exception:
-        print("[!] Warning: Could not upgrade pip.")
+        pass
 
 ensure_pip()
 
@@ -34,7 +33,6 @@ def install_and_import(package):
     try:
         __import__(package)
     except ImportError:
-        print(f"[+] Installing {package}...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 for pkg in ["flask", "requests", "pyngrok"]:
@@ -45,9 +43,8 @@ from flask import Flask, request
 from pyngrok import ngrok
 
 def install_ngrok_binary():
-    if shutil.which("ngrok") is not None:
+    if shutil.which("ngrok"):
         return
-    print("[*] ngrok binary not found. Attempting to install...")
     arch = platform.machine()
     url = ""
     if "aarch64" in arch or "arm" in arch.lower():
@@ -55,19 +52,37 @@ def install_ngrok_binary():
     elif "x86_64" in arch:
         url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-linux-amd64.zip"
     else:
-        print("[!] Unknown architecture. Please install ngrok manually.")
         return
-    try:
-        os.system(f"wget {url} -O ngrok.zip")
-        os.system("unzip ngrok.zip")
-        os.system("chmod +x ngrok")
-        os.system("mv ngrok $PREFIX/bin/")
-        os.remove("ngrok.zip")
-        print("[+] ngrok installed successfully!")
-    except Exception as e:
-        print(f"[!] Failed to install ngrok automatically: {e}")
+    os.system(f"wget {url} -O ngrok.zip")
+    os.system("unzip ngrok.zip")
+    os.system("chmod +x ngrok")
+    os.system("mv ngrok $PREFIX/bin/")
+    os.remove("ngrok.zip")
 
 install_ngrok_binary()
+
+def install_cloudflared():
+    if shutil.which("cloudflared"):
+        return
+    arch = platform.machine()
+    url = ""
+    if platform.system() == "Linux":
+        if "aarch64" in arch or "arm" in arch.lower():
+            url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
+        elif "x86_64" in arch:
+            url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+        else:
+            return
+    elif platform.system() == "Darwin":
+        url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64"
+    else:
+        return
+    os.system(f"wget {url} -O cloudflared")
+    os.system("chmod +x cloudflared")
+    if platform.system() != "Windows":
+        os.system("mv cloudflared $PREFIX/bin/")
+
+install_cloudflared()
 
 BANNER = """
 =====================================
@@ -78,6 +93,7 @@ BANNER = """
 visitor_queue = queue.Queue()
 app = Flask(__name__)
 ngrok_tunnel = None
+cloudflared_process = None
 
 def get_ip_geolocation(ip):
     try:
@@ -97,7 +113,7 @@ def get_ip_geolocation(ip):
             "latitude": latitude,
             "longitude": longitude
         }
-    except (requests.RequestException, json.JSONDecodeError):
+    except Exception:
         return {"ip": ip, "error": "Could not fetch location data"}
 
 def option_1_track_ip():
@@ -108,7 +124,6 @@ def option_1_track_ip():
         if not ip:
             print("Please enter a valid IP.")
             continue
-        print("[*] Querying location...")
         info = get_ip_geolocation(ip)
         print("\n--- IP Information ---")
         for k, v in info.items():
@@ -128,13 +143,12 @@ def index():
     <p>Your IP: {visitor_ip}</p>
     <p>Approximate Location:</p>
     <ul>
-        <li>City: {location_data.get('city')}</li>
-        <li>Region: {location_data.get('region')}</li>
-        <li>Country: {location_data.get('country')}</li>
-        <li>Latitude: {location_data.get('latitude')}</li>
-        <li>Longitude: {location_data.get('longitude')}</li>
+        <li>City: {location_data.get("city")}</li>
+        <li>Region: {location_data.get("region")}</li>
+        <li>Country: {location_data.get("country")}</li>
+        <li>Latitude: {location_data.get("latitude")}</li>
+        <li>Longitude: {location_data.get("longitude")}</li>
     </ul>
-    <p>Thank you for visiting.</p>
     </body>
     </html>
     """
@@ -151,107 +165,177 @@ def get_or_ask_auth_token():
             if token:
                 return token
     print("\n[!] No ngrok auth token found!")
-    print("You need a free ngrok account. Get your auth token here:")
-    print("   https://dashboard.ngrok.com/get-started/your-authtoken\n")
+    print("Get your free ngrok auth token at: https://dashboard.ngrok.com/get-started/your-authtoken\n")
     token = input("Paste your ngrok auth token here: ").strip()
     with open(token_file, "w") as f:
         f.write(token)
-    print("[+] Auth token saved to ngrok_token.txt for future runs.")
     return token
 
-def wait_for_flask_start(port=5000, timeout=10):
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                return True
-        except (ConnectionRefusedError, socket.timeout):
-            time.sleep(0.2)
-    return False
+def kill_process_on_port(port=5000):
+    try:
+        if platform.system() == "Windows":
+            cmd_find = f'netstat -ano | findstr :{port}'
+            output = subprocess.check_output(cmd_find, shell=True).decode()
+            for line in output.strip().split('\n'):
+                parts = line.strip().split()
+                if len(parts) >= 5 and parts[1].endswith(f":{port}"):
+                    pid = parts[-1]
+                    subprocess.call(f"taskkill /PID {pid} /F", shell=True)
+        else:
+            cmd_find = f"lsof -ti:{port}"
+            pids_bytes = subprocess.check_output(cmd_find, shell=True)
+            pids = pids_bytes.decode().strip().split('\n') if pids_bytes else []
+            for pid in pids:
+                if pid.isdigit():
+                    subprocess.call(f"kill -9 {pid}", shell=True)
+    except Exception:
+        pass
 
 def start_ngrok_tunnel():
     ngrok.kill()
     auth_token = get_or_ask_auth_token()
     try:
         ngrok.set_auth_token(auth_token)
-    except Exception as e:
-        print(f"[!] Error setting auth token: {e}")
+    except Exception:
         return None
-
-    print("[*] Waiting for Flask server to start on port 5000...")
-    if not wait_for_flask_start(5000):
-        print("[!] Flask did not start in time. Cannot open ngrok tunnel.")
-        return None
-
+    time.sleep(2)
     try:
         tunnel = ngrok.connect(5000)
-        print("[+] ngrok tunnel started!")
+        for _ in range(10):
+            if tunnel.public_url:
+                return tunnel
+            time.sleep(0.5)
         return tunnel
-    except Exception as e:
-        print(f"[!] Failed to start ngrok tunnel: {e}")
+    except Exception:
         return None
 
 def option_2_public_tracker():
+    kill_process_on_port(5000)
     global ngrok_tunnel
     flask_thread = threading.Thread(target=run_flask_server, daemon=True)
     flask_thread.start()
     print("[*] Starting ngrok tunnel...")
     ngrok_tunnel = start_ngrok_tunnel()
     if not ngrok_tunnel:
-        print("[!] Exiting this option due to tunnel error.")
+        print("[!] Failed to start ngrok tunnel.")
         return
     print(f"\n[+] Share this URL:\n\n    {ngrok_tunnel.public_url}\n")
     while True:
         try:
             visitor = visitor_queue.get()
-            print("\n=== New Visitor ===")
             for k, v in visitor.items():
                 print(f"{k.capitalize()}: {v}")
-            lat = visitor.get('latitude')
-            lon = visitor.get('longitude')
+            lat, lon = visitor.get('latitude'), visitor.get('longitude')
             if lat and lon:
-                maps_url = f"https://www.google.com/maps?q={lat},{lon}"
-                print(f"\nGoogle Maps Link: {maps_url}")
-                choice = input("Open this location in your browser? (y/n): ").strip().lower()
+                url = f"https://www.google.com/maps?q={lat},{lon}"
+                print(f"Google Maps Link: {url}")
+                choice = input("Open location in browser? (y/n): ").strip().lower()
                 if choice == "y":
-                    webbrowser.open(maps_url)
-            else:
-                print("No valid latitude/longitude.")
-            print("\n[*] Waiting for next visitor...\n")
-            time.sleep(0.1)
+                    webbrowser.open(url)
+            print()
         except KeyboardInterrupt:
-            print("\n[!] Interrupted. Shutting down...")
             if ngrok_tunnel:
                 ngrok.disconnect(ngrok_tunnel.public_url)
                 ngrok.kill()
             break
-        except Exception as e:
-            print(f"[!] Error: {e}")
+        except:
+            pass
+
+def start_cloudflared_tunnel():
+    global cloudflared_process
+    try:
+        cloudflared_process = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", "http://localhost:5000"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        )
+    except FileNotFoundError:
+        return None
+    public_url = None
+    pattern = re.compile(r"https?://[^\s]+trycloudflare.com")
+    for line in iter(cloudflared_process.stdout.readline, ""):
+        line = line.strip()
+        match = pattern.search(line)
+        if match:
+            public_url = match.group(0)
+            break
+    if not public_url:
+        try:
+            cloudflared_process.terminate()
+        except:
+            pass
+        return None
+    return public_url
+
+def option_3_cloudflare_tracker():
+    kill_process_on_port(5000)
+    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
+    flask_thread.start()
+    install_cloudflared()
+    public_url = start_cloudflared_tunnel()
+    if not public_url:
+        print("[!] cloudflared tunnel failed.")
+        return
+    print(f"\n[+] Share this URL:\n\n    {public_url}\n")
+    try:
+        while True:
+            visitor = visitor_queue.get()
+            for k, v in visitor.items():
+                print(f"{k.capitalize()}: {v}")
+            lat, lon = visitor.get('latitude'), visitor.get('longitude')
+            if lat and lon:
+                url = f"https://www.google.com/maps?q={lat},{lon}"
+                print(f"Google Maps Link: {url}")
+                choice = input("Open location in browser? (y/n): ").strip().lower()
+                if choice == "y":
+                    webbrowser.open(url)
+            print()
+    except KeyboardInterrupt:
+        if cloudflared_process:
+            cloudflared_process.terminate()
+            cloudflared_process.wait()
 
 def main_menu():
     print(BANNER)
     while True:
-        print("\nSelect an option:")
-        print("1) Track IP by input")
-        print("2) Generate public shareable URL to track visitors")
-        print("3) Exit")
-        choice = input("Enter choice (1/2/3): ").strip()
+        print("\n1) Track IP by input")
+        print("2) Public shareable URL with ngrok")
+        print("3) Public shareable URL with Cloudflare Tunnel")
+        print("4) Exit")
+        choice = input("Choice: ").strip()
         if choice == "1":
             option_1_track_ip()
         elif choice == "2":
             option_2_public_tracker()
         elif choice == "3":
-            print("\nGoodbye!\n")
+            option_3_cloudflare_tracker()
+        elif choice == "4":
+            try:
+                ngrok.kill()
+            except:
+                pass
+            try:
+                if cloudflared_process:
+                    cloudflared_process.terminate()
+                    cloudflared_process.wait()
+            except:
+                pass
             sys.exit(0)
-        else:
-            print("\nInvalid choice. Please try again.")
 
 if __name__ == "__main__":
     try:
         main_menu()
     except KeyboardInterrupt:
-        print("\nExiting gracefully. Goodbye!")
         try:
             ngrok.kill()
-        except Exception:
+        except:
+            pass
+        try:
+            if cloudflared_process:
+                cloudflared_process.terminate()
+                cloudflared_process.wait()
+        except:
             pass
