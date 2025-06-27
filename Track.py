@@ -250,17 +250,16 @@ def start_cloudflared_tunnel():
         return None
 
     public_url = None
-    pattern = re.compile(r"https?://(?!api\.)[^\s]+trycloudflare.com")
+    pattern = re.compile(r"https?://[^\s]+trycloudflare.com")
 
     for line in iter(cloudflared_process.stdout.readline, ""):
         line = line.strip()
         match = pattern.search(line)
         if match:
-            candidate_url = match.group(0)
-            if "api.trycloudflare.com" not in candidate_url:
-                public_url = candidate_url
-                break
-                if not public_url:
+            public_url = match.group(0)
+            break
+
+    if not public_url:
         try:
             cloudflared_process.terminate()
         except:
