@@ -34,6 +34,20 @@ def init_db():
 
 init_db()
 
+# Home page: show custom green large text
+@app.route("/")
+def home():
+    html = '''
+    <div style="text-align:center; margin-top:50px;">
+      <h1 style="color:green; font-size:48px; font-weight:bold;">
+        Made by Mohimanul-TVM
+      </h1>
+      <p>Create short links from console. Run server and share your ngrok or public URL + code.</p>
+      <p>Admin logs at <a href="/admin/logs">/admin/logs</a></p>
+    </div>
+    '''
+    return html
+
 @app.route("/<code>")
 def redirector(code):
     conn = sqlite3.connect(DB_FILE)
@@ -44,7 +58,7 @@ def redirector(code):
         return "Link not found.", 404
 
     destination = row[0]
-    ip = request.remote_addr
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     user_agent = request.headers.get('User-Agent')
     timestamp = datetime.datetime.now().isoformat()
 
@@ -81,8 +95,9 @@ def admin_logs():
     conn.close()
 
     html = '''
-        <h2>Visitor Logs</h2>
-        <table border="1" cellpadding="5" cellspacing="0">
+        <h2 style="text-align:center;">Visitor Logs</h2>
+        <table border="1" cellpadding="5" cellspacing="0" style="width:95%; margin:auto; border-collapse: collapse;">
+            <thead style="background-color:#eee;">
             <tr>
                 <th>Code</th>
                 <th>IP</th>
@@ -91,11 +106,13 @@ def admin_logs():
                 <th>City</th>
                 <th>Location</th>
             </tr>
+            </thead>
+            <tbody>
             {% for log in logs %}
                 <tr>
                     <td>{{ log[0] }}</td>
                     <td>{{ log[1] }}</td>
-                    <td>{{ log[2] }}</td>
+                    <td style="max-width:300px; word-wrap:break-word;">{{ log[2] }}</td>
                     <td>{{ log[3] }}</td>
                     <td>{{ log[4] if log[4] else 'N/A' }}</td>
                     <td>
@@ -107,9 +124,12 @@ def admin_logs():
                     </td>
                 </tr>
             {% endfor %}
+            </tbody>
         </table>
         <br>
-        <a href="/">Back to Home</a>
+        <div style="text-align:center;">
+          <a href="/">Back to Home</a>
+        </div>
     '''
     return render_template_string(html, logs=logs)
 
